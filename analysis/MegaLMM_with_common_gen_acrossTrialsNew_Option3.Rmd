@@ -1,0 +1,601 @@
+---
+title: "MegLMM analysis with connecting genotypes across trials without alternate connecting accessions"
+author: "Tesfahun A. Setotaw"
+date: "2024-04-16"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE, echo=FALSE}
+require("knitr")
+knitr::opts_chunk$set(echo = TRUE)
+if (!require("here")) install.packages("here")
+opts_knit$set(root.dir = "~/Documents/MegaLMM_Project/") # setting the working director 
+```
+
+# Data importing and preparation for the analysis
+
+```{r}
+library(MegaLMM) # load the package
+library(ggplot2)
+library(lme4)
+library(rrBLUP)
+library(sommer)
+library(gridExtra)
+library(tibble)
+library(reshape2)
+library(genomicMateSelectR)
+
+```
+
+To introduce the application of MegaLMM for multitrait analysis and genomic selection.
+
+```{r}
+##################################################
+# Import phenotypic data and prepare for analysis 
+#################################################
+library(tibble) # 
+
+ # for reproducibility
+set.seed(1234)
+
+setwd("~/Documents/MegaLMM_Project/")
+phen = read.csv(here::here("data", "phenotype_Group2_selected_final.csv")) # read the file 
+phen$loc = as.factor(phen$locationName) # rename the factors accordingly
+phen$studyName = as.factor(phen$studyName)
+phen$geno = as.factor(phen$germplasmName)
+phen$year = as.factor(phen$studyYear)
+
+phen$rep = as.factor(phen$replicate)
+phen$block = as.factor(phen$blockNumber)
+phen$test_weight = phen$Grain.test.weight...g.l.CO_321.0001210 # rename the traits 
+phen$Plant_height = phen$Plant.height...cm.CO_321.0001301 
+phen$Grain_Yield = phen$Grain.yield...kg.ha.CO_321.0001218
+summary(phen)
+unique(phen$geno)
+id = which(phen$Grain_Yield == 0) # select the trait with value 0, to remove it
+id # if this value is zero  not to run the next line
+id_out <- which(phen$Grain_Yield > 10000 ) 
+phen[id_out,"Grain_Yield"] = NA
+phen[id,"Grain_Yield"] = NA
+```
+
+
+#Remove outliers if necessary
+
+```{r}
+#ploting the availability of genotypes in respective environments 
+Image(as.matrix(table(phen$geno,phen$studyName)),) + theme(legend.position = 'none') + xlab('Environment') + ylab('Line') + labs(title = "Group6_selected, 743 accessions, 7 Envt")
+unique(phen$germplasmName)
+unique(phen$studyName)
+heatmap(as.matrix(table(phen$geno,phen$studyName)),Rowv = NA, Colv = NA, col = hcl.colors(1))
+which(apply(as.matrix(table(phen$geno,phen$studyName)), MARGIN = 1, FUN = sum)==0)
+library(plot.matrix)
+plot(as.matrix(table(phen$geno,phen$studyName)))
+```
+```{r #summarize information abut the trial groups}
+library(tibble)
+Sum_trial_group <- tibble()
+for(i in unique(phen$studyName)){
+  ph1 <- phen[phen$studyName == i, ]
+  TotalNo <- length(unique(phen$germplasmName))
+  gen_trial <- length(unique(ph1$germplasmName))
+  sumgT1 <- cbind(Trial_group = "Group4", TotalNo_group = TotalNo, Trial = i, gen_trial = gen_trial)
+  Sum_trial_group <- rbind(Sum_trial_group, sumgT1)
+}
+
+```
+
+
+
+```{r}
+# The histogram 
+hist(table(phen$geno),main = 'Environments per line',breaks=20)
+hist(table(phen$studyName),main = 'Lines per Environment',breaks=20)
+```
+```{r}
+# Arranging the BLUE estimate data of the genotypes across environment 
+##############################################
+## To change from wide format to long format 
+#############################################
+########################
+library(tibble)
+
+  
+Traits = c( "Grain_Yield") # list the traits 
+head(phen)
+summary(phen)
+prd_BLUE_long = tibble() # To change the trait to long format 
+phen$studyName
+phen$geno
+ for(Trait in Traits){
+  dt = phen[,c("studyName", "geno", paste(Trait))]
+  colnames(dt)[3] = "BlueMean"
+  dt1 = cbind(dt,Trait = paste(Trait))
+  prd_BLUE_long = rbind(prd_BLUE_long,dt1)
+}
+
+head(prd_BLUE_long)
+summary(prd_BLUE_long)
+#produce the boxplot of the raw data
+library(ggplot2)
+plt = ggplot(data = prd_BLUE_long, mapping = aes(x = studyName, y = BlueMean)) +
+  geom_boxplot() 
+  plt + facet_wrap(~Trait, scales = "free_y") + theme_bw() +
+    theme(axis.text.x = element_text(angle = 90))
+ 
+#Check for the wrong data - if found, you can remove using the following command
+# to change to long data type the orginal blue data
+ # phen = droplevels(phen[!phen$studyName %in% "HWWpanel_2012_Mead", ]) # remove trial with problem
+
+   
+  summary(prd_BLUE_long)
+  
+
+```
+
+```{r}
+###############################################
+# change the data to wide type 
+# Change the data in to wide type - to have the  Trait by environment data
+library(reshape2) # load the reshape package
+unique(phen$rep) # This is done for single rep data (BlUEs of the trait)
+prd_BLUE_long$studyName = as.factor(prd_BLUE_long$studyName)
+prd_BLUE_long$Trait = as.factor(prd_BLUE_long$Trait)
+prd_BLUE_long$StudyNameTrait = prd_BLUE_long$studyName:prd_BLUE_long$Trait
+prd_BLUE_long$StudyNameTrait = gsub(pattern = ":", replacement = "_", x = prd_BLUE_long$StudyNameTrait)
+prd_BLUE_long$StudyNameTrait = as.factor(prd_BLUE_long$StudyNameTrait)
+
+BlueMean_All_Trait_wide = dcast(data = prd_BLUE_long, formula = geno ~ StudyNameTrait, fun.aggregate = mean, value.var = "BlueMean")
+head(BlueMean_All_Trait_wide)
+summary(BlueMean_All_Trait_wide)
+dim(BlueMean_All_Trait_wide)
+########################################
+#Removing envt with all values NA
+colnam = c() # the list of trial trait combination all values are NAs
+for(i in colnames(BlueMean_All_Trait_wide)[-1]){
+ n =  length(which(is.na(BlueMean_All_Trait_wide[,i])))
+ if(n == length(BlueMean_All_Trait_wide[,i])){
+  colnam = c(colnam, i)
+ }
+}
+n_col = which(names(BlueMean_All_Trait_wide) %in% colnam)
+if(length(n_col) == 0){
+BlueMean_All_Trait_wide_withOut_NA = BlueMean_All_Trait_wide
+}else{
+ BlueMean_All_Trait_wide_withOut_NA = BlueMean_All_Trait_wide[,-n_col] 
+}
+dim(BlueMean_All_Trait_wide_withOut_NA)
+#####################################################
+# removing the outliers - since the trial is single replication the boxplot stat was used to remove the outlier
+#####################################################
+BlueMean_All_Trait_wide_withOut_NA_wo_outlier = BlueMean_All_Trait_wide_withOut_NA
+for(i in colnames(BlueMean_All_Trait_wide_withOut_NA[-1])){
+  id = which(BlueMean_All_Trait_wide_withOut_NA[,i] %in% boxplot.stats(BlueMean_All_Trait_wide_withOut_NA[,i])$out) # outlier based on boxstatistics
+  BlueMean_All_Trait_wide_withOut_NA_wo_outlier[id, i] = NA # substitute the outliers with NA values
+}
+summary(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)
+dim(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)
+# #######################################################
+# # # removing trials with low number of observed values
+# for(i in colnames(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)){
+# nobs = length(which(!is.na(BlueMean_All_Trait_wide_withOut_NA_wo_outlier[,i])))
+# if(nobs <= 0.3*nrow(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)){
+#   BlueMean_All_Trait_wide_withOut_NA_wo_outlier = BlueMean_All_Trait_wide_withOut_NA_wo_outlier[,!colnames(BlueMean_All_Trait_wide_withOut_NA_wo_outlier) %in% i]
+# }
+# }
+# dim(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)
+# summary(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)
+#######################################
+# removing traits  have a single value (observation)
+for(i in colnames(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)[-1]){
+      id = which(!is.na(BlueMean_All_Trait_wide_withOut_NA_wo_outlier[,i]))
+      
+      if(length(id) == 1){
+  BlueMean_All_Trait_wide_withOut_NA_wo_outlier[id, i] = NA
+      }
+}
+dim(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)
+# checking for the variance of the traits - if variance is zero, the trait should be removed from the analsyis
+which(round(apply(BlueMean_All_Trait_wide_withOut_NA_wo_outlier[,-1], MARGIN = 2, FUN = var, na.rm = T),3) == 0) # check for the zero variance 
+dim(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)
+head(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)
+summary(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)
+ #BlueMean_All_Trait_wide_withOut_NA_wo_outlier = BlueMean_All_Trait_wide_withOut_NA_wo_outlier[,-22]
+
+# count_leng = c()
+# for(i in colnames(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)[-1]){
+#   lng = length(which(is.na(BlueMean_All_Trait_wide_withOut_NA_wo_outlier[,i])))
+#   if(lng >20){
+#   
+#     count_leng = rbind(count_leng,i)
+#   }
+# }
+# BlueMean_All_Trait_wide_withOut_NA_wo_outlier = BlueMean_All_Trait_wide_withOut_NA_wo_outlier[,!colnames(BlueMean_All_Trait_wide_withOut_NA_wo_outlier) %in% count_leng]
+# summary(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)
+# #################
+# # select the genotypes with NA values 
+# Geno_missing = tibble()
+# for(i in colnames(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)[-1]){
+#  id_lng =  which(is.na(BlueMean_All_Trait_wide_withOut_NA_wo_outlier[,i]))
+#  gen_mis = cbind(geno = as.vector(BlueMean_All_Trait_wide_withOut_NA_wo_outlier$geno)[id_lng],Trial = i)
+#  Geno_missing = rbind(Geno_missing, gen_mis)
+#  
+# }
+# Geno_missing$geno = as.factor(Geno_missing$geno)
+# summary(Geno_missing)
+# table(Geno_missing$geno,Geno_missing$Trial)
+# unique(Geno_missing$geno)
+# idm = which(BlueMean_All_Trait_wide_withOut_NA_wo_outlier$geno %in% Geno_missing$geno )
+# BlueMean_All_Trait_wide_withOut_NA_wo_outlier = BlueMean_All_Trait_wide_withOut_NA_wo_outlier[-idm, ]
+# summary(BlueMean_All_Trait_wide_withOut_NA_wo_outlier)
+
+
+#########################
+# Organize the phenotypic data  
+
+##################################
+# Organizing the phenotype data 
+Y1 = BlueMean_All_Trait_wide_withOut_NA_wo_outlier # rename the data 
+rownames(Y1) <- Y1$geno # row name the data using the genotype name
+Y1 = Y1[sort(rownames(Y1)),] # sort the data based on the rownames of the phenotype data (genotype name)
+Y1 = Y1[,-1] # removing the genotype column 
+summary(Y1)
+# Y1 = Y1[,-3]
+# Checking for the zero variance for each trait
+which(round(apply(Y1, 2, FUN = var, na.rm = T),3) == 0)
+
+
+```
+
+
+
+# Import and arrange the marker data according to the format and estimate the relatioship matrix among genotypes 
+```{r}
+# read the relationship matrix - the combined relationship matrix 
+# read genotype data
+library(readr) # Load package to read the .tsv format data 
+mark = read_tsv(here::here("data", "SNPs_Group2_selected_final.tsv"), col_names = T)
+mark = as.data.frame(mark)
+head(mark)
+dim(mark)
+library(sommer)
+dim(mark)
+rownames(mark) = mark$Marker # naming the row using the marker names
+
+Tmark = t(mark[,-1]) # transposed marker data (genotype row, snp column)
+head(Tmark[,1:10])
+colnames(Tmark) <- rownames(mark)
+Tmark = Tmark[sort(rownames(Tmark)),]
+idmrk = which(rownames(Tmark) %in% rownames(Y1))
+head(Tmark[,1:10])
+Tmark = Tmark[idmrk, ]
+# Kinship relationship matrix - Addative model 
+# Remove markers with NA value greater than 0.2 (20%)
+
+head(Tmark[,1:10])
+head(Y1)
+x = c()
+for(i in 1:length(colnames(Tmark))){
+  if(length(which(is.na(Tmark[,i]))) > 0.2 *length(colnames(Tmark))){ # to list the genotypes with NA value greater than 20%
+    x = c(x,i)
+  }
+  
+}
+
+# removing the markers with missing value greater than 20% 
+if(length(x) == 0){
+  Tmark1 = Tmark
+}else{
+  Tmark1 = Tmark[,-x]
+}
+
+dim(Tmark1)
+###############################################################
+## IMpute the NA values with the average of the dosage markers 
+##############################################################
+library(genomicMateSelectR)
+Tmarkf = maf_filter(M = Tmark1, thresh = 0.05) # filtering based on the minimum allele frequency
+dim(Tmarkf)
+
+missing_av = apply(X = Tmarkf, MARGIN = 2, FUN = mean, na.rm = T) # impute the data based on the average value 
+
+for(i in 1:ncol(Tmarkf)){
+  Tmarkf[is.na(Tmarkf[,i]), i] <- missing_av[i]
+}
+Tmarkf[1:10,1:10]
+
+KinAD = kinship(M = Tmarkf, type = "add") # Kinship with the additive model 
+head(KinAD[1:10,1:10])
+
+length(which(rownames(KinAD) %in% unique(phen$geno))) # the number of the genotypes found in kinship matrix and phenotyped
+
+Image(KinAD, include_zero = F) # to see the image of the relationship matrix 
+heatmap(KinAD) # the heat map of the relationship matrix 
+
+```
+
+
+```{r}
+# Define the desing matrix and the response variables 
+Kmatrix = KinAD
+
+#The design matrix 
+designMat = as.data.frame(rownames(Y1)) # subseting the genotype column 
+colnames(designMat)[1] = "geno" # rename the column 
+designMat$intercept = 1 # add the intercept on the design matrix 
+designMat = designMat[,c(2,1)] # rearrange the position of the desing matrix 
+
+idgeno = which(designMat$geno %in% rownames(Kmatrix)) # subset the genotypes shared by the phenotype and marker data 
+designMat = designMat[idgeno,] # subseting the genotypes with marker data
+dim(designMat)
+idmark = which(rownames(Kmatrix) %in% designMat$geno) # genotypes with marker data found in phenotype data 
+
+Kmatrix = Kmatrix[idmark,idmark] # index the marker data with phenotype data
+all(rownames(Kmatrix) %in% designMat$geno) # cross check if all the genotypes in the marker data found in the phenotype data matrix 
+data.frame(rownames(Kmatrix),designMat$geno) # cross check if all the genotypes in the marker data found in the phenotype data 
+dim(Kmatrix)
+
+```
+
+```{r cars}
+#check if all the genotypes found in the genetic relationship matrix 
+
+
+all(rownames(KinAD) %in% designMat$geno)
+idm = which(rownames(KinAD) %in% rownames(Y1))
+K = Kmatrix[idm, idm]
+head(K[1:5,1:5])
+dim(Y1)
+dim(K)
+all(rownames(Y1) %in% rownames(K))
+all(rownames(Y1) %in% designMat$geno)
+
+```
+
+```{r Cross validation scheme }
+############################################################
+# # option - 3, with common genotype across locations 
+
+# set the connecter genotype across Trials 
+############################################################
+
+
+Acc_MegaLMM_scenario_3 <- tibble()
+
+for(pr in 1:10){
+
+#################
+
+
+#identify gneotypes common for trial 1 and 2, trial 2 and 3
+Trial_smp <- sample(unique(colnames(Y1)),size = 3, replace = FALSE) # sample trials
+#step1.
+Y2 <- Y1[,Trial_smp] # subset sampl trial data
+summary(Y2)
+# set the testing set
+#Select the observation without Na
+Geno_WithNO_Na <- tibble() # select genotypes with obsreved value across trials
+for(j in Trial_smp){
+  gn_withoutNa <- rownames(Y2)[which(!is.na(Y2[,j]))]
+  gen1 <-  cbind(Trial = j, geno_name = gn_withoutNa)
+  Geno_WithNO_Na <- rbind(Geno_WithNO_Na, gen1)
+}
+
+Tbl_trial <- table(Geno_WithNO_Na$Trial) #  calculate the number of genotypes with observed values across trials
+
+
+Trial_min <- names(Tbl_trial)[Tbl_trial < 150] # subset trial with minimum number of accessions with phenotype data
+Trial_max <- names(Tbl_trial)[Tbl_trial > 150] # Trials with maximum number of accessions
+Trial_ord <- c(Trial_min,Trial_max)
+Y2 <- Y2[,Trial_ord]
+
+#subset accessions of trial 1 and 2, trial 2 and 3
+Geno_Trial1 <- unique(Geno_WithNO_Na[Geno_WithNO_Na$Trial %in%  Trial_ord[1],"geno_name"])
+Geno_Trial2 <- unique(Geno_WithNO_Na[Geno_WithNO_Na$Trial %in%  Trial_ord[2],"geno_name"])
+Geno_Trial3 <- unique(Geno_WithNO_Na[Geno_WithNO_Na$Trial %in%  Trial_ord[3],"geno_name"])
+
+#Select 20 accessions common across the three trials 
+len_intr <- length(Reduce(intersect, list(Geno_Trial1,Geno_Trial2,Geno_Trial3)))
+if(len_intr > 20){
+  gen_intsel <- sample(Reduce(intersect, list(Geno_Trial1,Geno_Trial2,Geno_Trial3)), size = 20, replace = F)
+}else{
+  gen_intsel <- Reduce(intersect, list(Geno_Trial1,Geno_Trial2,Geno_Trial3))
+}
+
+#######
+# Select accessions different from the common accessions across trials   
+
+Geno_Trial1_sel <- Geno_Trial1[!Geno_Trial1 %in% gen_intsel]
+Geno_Trial2_sel <- Geno_Trial2[!Geno_Trial2 %in% gen_intsel]
+Geno_Trial3_sel <- Geno_Trial3[!Geno_Trial3 %in% gen_intsel]
+
+##Subset accessions for the training set by excluding the common accessions across trials 
+#Setting the condition that no connecting accessions among trials 
+Train_geno1 <- c(gen_intsel,sample(Geno_Trial1_sel[!Geno_Trial1_sel %in% gen_intsel], size = 20, replace = F))
+Train_geno2 <- c(gen_intsel,sample(Geno_Trial2_sel[!Geno_Trial2_sel %in% c(Train_geno1,gen_intsel)],size = 20, replace = F))
+Train_geno3 <- c(gen_intsel,sample(Geno_Trial3_sel[!Geno_Trial3_sel %in% c(Train_geno1, Train_geno2,gen_intsel)],size = 20, replace = F))
+
+#Setting the Training set
+Y_Train <- Y2
+Y_Train[!rownames(Y_Train) %in% Train_geno1,Trial_ord[1]] <- NA
+Y_Train[!rownames(Y_Train) %in% Train_geno2,Trial_ord[2]] <- NA
+Y_Train[!rownames(Y_Train) %in% Train_geno3,Trial_ord[3]] <- NA
+summary(Y_Train)
+
+# Test set
+
+Y_Test <- Y2
+Y_Test[rownames(Y_Test) %in% c(Train_geno1,gen_intsel),Trial_ord[1]] <- NA
+Y_Test[rownames(Y_Test) %in% c(Train_geno2,gen_intsel),Trial_ord[2]] <- NA
+Y_Test[rownames(Y_Test) %in% c(Train_geno3,gen_intsel),Trial_ord[3]] <- NA
+summary(Y_Test)
+
+#####################################
+#Imput paramter for MegaLMM analysis - This are the standard for MegaLMM - I did not make much change on it
+run_parameters = MegaLMM_control(
+  h2_divisions = 20, 
+    # Each variance component is allowed to explain between 0% and 100% of the
+      # total variation. How many segments should the range [0,100) be divided 
+      # into for each random effect?
+  burn = 0,  
+    # number of burn in samples before saving posterior samples. I set this to 
+      # zero and instead run the chain in small chunks, doing the burning manually, a
+      # s described below.
+  thin = 2,
+    # during sampling, we'll save every 2nd sample to the posterior database.
+  K = 3 # number of factors. With 19 traits, this is likely way higher than needed.
+)
+
+# Setup the megaLMM model
+designMat$geno = as.factor(designMat$geno)
+MegaLMM_state1 = setup_model_MegaLMM(
+  Y = Y_Train ,  
+    # The n x p trait matrix
+  formula = ~ (1|geno),  
+    # This is syntax like lme4 for mixed effect models. 
+      # We specify a fixed effect of population and a random effect for genotype (Line)
+  data = designMat,         
+    # the data.frame with information for constructing the model matrices
+  relmat = list(geno = K), 
+    # A list of covariance matrices to link to the random effects in formula.
+      # each grouping variable in formula can be linked to a covariance matrix.
+      # If so, every level of the grouping variable must be in the rownames of K.
+      # additional rows of K not present in data will still be predicted 
+        # (and therefore will use memory and computational time!)
+  run_parameters=run_parameters,
+    # This list of control parameters created above
+  run_ID = sprintf('MegaLMM_fold_%02d',pr)
+    # A run identifier. The function will create a folder with this name 
+      # and store lots of useful data inside it
+)
+
+##Set lambda prior
+Lambda_prior = list(
+    sampler = sample_Lambda_prec_horseshoe, 
+      # function that implements the horseshoe-based Lambda prior 
+          # described in Runcie et al 2020. 
+          #See code to see requirements for this function.
+      # other options are:
+          # ?sample_Lambda_prec_ARD,
+          # ?sample_Lambda_prec_BayesC
+    prop_0 = 0.1,    
+      # prior guess at the number of non-zero loadings in the first and most important factor
+    delta = list(shape = 3, scale = 1),    
+      # parameters of the gamma distribution giving the expected change 
+          # in proportion of non-zero loadings in each consecutive factor
+    delta_iterations_factor = 100   
+      # parameter that affects mixing of the MCMC sampler. This value is generally fine.
+  )
+
+priors = MegaLMM_priors(
+  tot_Y_var = list(V = 0.5,   nu = 5),      
+    # Prior variance of trait residuals after accounting for fixed effects and factors
+      # See MCMCglmm for meaning of V and nu
+  tot_F_var = list(V = 18/20, nu = 20),     
+    # Prior variance of factor traits. This is included to improve MCMC mixing, 
+      # but can be turned off by setting nu very large
+  h2_priors_resids_fun = function(h2s,n)  1,  
+    # Function that returns the prior density for any value of the h2s vector 
+        # (ie the vector of random effect proportional variances across all random effects. 
+        # 1 means constant prior. 
+        # n is the number of h2 divisions above (here=20)
+        # 1-n*sum(h2s)/n linearly interpolates between 1 and 0, 
+            # giving more weight to lower values
+  h2_priors_factors_fun = function(h2s,n) 1, 
+    # See above. 
+        # sum(h2s) linearly interpolates between 0 and 1,
+            # giving more weight to higher values
+        # Another choice is one that gives 50% weight to h2==0: ifelse(h2s == 0,n,n/(n-1))
+  Lambda_prior = Lambda_prior
+    # from above
+)
+
+MegaLMM_state1 = set_priors_MegaLMM(MegaLMM_state1,priors)
+
+maps = make_Missing_data_map(MegaLMM_state1,max_NA_groups = ncol(Y1)+1,verbose=F)
+
+MegaLMM_state1 = set_Missing_data_map(MegaLMM_state1,maps$Missing_data_map_list[[1]])
+
+
+MegaLMM_state1 = initialize_variables_MegaLMM(MegaLMM_state1)
+
+estimate_memory_initialization_MegaLMM(MegaLMM_state1)
+MegaLMM_state1 = initialize_MegaLMM(MegaLMM_state1,verbose = T)
+
+MegaLMM_state1$Posterior$posteriorSample_params = c('Lambda','F_h2','resid_h2','tot_Eta_prec')
+MegaLMM_state1$Posterior$posteriorMean_params = 'Eta_mean'
+
+
+MegaLMM_state1$Posterior$posteriorFunctions = list(
+  U = 'U_F %*% Lambda + U_R',
+  G = 't(Lambda) %*% diag(F_h2[1,]) %*% Lambda + diag(resid_h2[1,]/tot_Eta_prec[1,])',
+  R = 't(Lambda) %*% diag(1-F_h2[1,]) %*% Lambda + diag((1-resid_h2[1,])/tot_Eta_prec[1,])',
+  h2 = '(colSums(F_h2[1,]*Lambda^2)+resid_h2[1,]/tot_Eta_prec[1,])/(colSums(Lambda^2)+1/tot_Eta_prec[1,])'
+  )
+
+MegaLMM_state1 = clear_Posterior(MegaLMM_state1)
+
+estimate_memory_posterior(MegaLMM_state1,100)
+
+library(microbenchmark)
+# The following code is optional, but tries to guess for your system how many CPUs to use for fastest processing
+(n_threads = optimize_n_threads(MegaLMM_state1,seq(1,RcppParallel::defaultNumThreads(),by=1),times=2))
+set_MegaLMM_nthreads(n_threads$optim)
+n_iter = 100
+
+for(i in 1:5) {
+  print(sprintf('Burnin run %d',i))
+    # Factor order doesn't "mix" well in the MCMC.
+    # We can help it by manually re-ordering from biggest to smallest
+  MegaLMM_state1 = reorder_factors(MegaLMM_state1,drop_cor_threshold = 0.6)
+    # clear any previous collected samples because we've re-started the chain 
+  MegaLMM_state1 = clear_Posterior(MegaLMM_state1)
+    # Draw n_iter new samples, storing the chain
+  MegaLMM_state1 = sample_MegaLMM(MegaLMM_state1,n_iter)
+    # make diagnostic plots
+  # traceplot_array(MegaLMM_state1$Posterior$Lambda,name = 'Lambda.pdf')
+  # traceplot_array(MegaLMM_state1$Posterior$U,name = 'U.pdf',
+  #                 facet_dim = 3,mask = fold_ID_matrix1 != 1)
+  print(sprintf('Completed %d burnin samples', MegaLMM_state1$current_state$nrun))
+}
+MegaLMM_state1 = clear_Posterior(MegaLMM_state1)
+
+##############
+n_iter = 250
+for(i in 1:4) {
+  print(sprintf('Sampling run %d',i))
+  MegaLMM_state1 = sample_MegaLMM(MegaLMM_state1,n_iter) 
+  MegaLMM_state1 = save_posterior_chunk(MegaLMM_state1)
+  print(MegaLMM_state1)
+}
+
+
+Lambda_samples = load_posterior_param(MegaLMM_state1,'Lambda')
+U_samples = load_posterior_param(MegaLMM_state1,'U')
+
+
+U_hat = get_posterior_mean(U_samples)
+Eta_mean = load_posterior_param(MegaLMM_state1,'Eta_mean')
+
+#Estimating the prediction accuracy 
+# Eta_mean_test = as.data.frame(Eta_mean)
+# colnames(Eta_mean_test) = Away_trial1
+# Y_test1 = as.data.frame(Y_test1)
+MegaLMM_Eta_mean_accuracy = as.data.frame(round(diag(cor(Y_Test,Eta_mean,use='p')),4))
+colnames(MegaLMM_Eta_mean_accuracy)[1] = "Accuracy"
+rownames(MegaLMM_Eta_mean_accuracy) = colnames(Y_Test)
+
+acc = cbind(Trial_name = rownames(MegaLMM_Eta_mean_accuracy), MegaLMM_Eta_mean_accuracy)
+
+
+Acc_MegaLMM_scenario_3 = rbind(Acc_MegaLMM_scenario_3, acc)
+
+}
+
+Acc_MegaLMM_scenario_3$Method<- "Scenario3"
+Acc_MegaLMM_scenario_3$Group <- "Group6"
+Acc_MegaLMM_scenario_3$plot_per_Trial <- 40
+Acc_MegaLMM_scenario_3$Trait <- "Plant_height"
+```
